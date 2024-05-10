@@ -1,0 +1,190 @@
+Parameters:
+  S3BucketName:
+    Type: String
+    Default: test-from-cloudformation
+  DynamoDBBlogTableName:
+    Type: String
+    Default: test-blog
+  DynamoDBBloggerTableName:
+    Type: String
+    Default: test-bloggerDetails
+  SecretManagerName:
+    Type: String
+    Default: test-blogSecretManager
+  # SnsTopicName:
+  #   Type: String
+  #   Default: test-BlogSubscription
+
+Resources:
+  #SecretManager
+  MySecret:
+    Type: "AWS::SecretsManager::Secret"
+    DependsOn:
+      - S3CloudFront
+    Properties:
+      Name: !Ref SecretManagerName
+      Description: "5409 cloud project secret"
+      # SecretString: !Sub |
+      #   {"bucket_name":"${S3BucketName}", "cloudfront_url":"${S3CloudFront.DomainName}"}
+      SecretString: !Sub |
+        {"bucket_name":"${S3BucketName}","blog_table_name":"${DynamoDBBlogTableName}","blogger_table_name":"${DynamoDBBloggerTableName}", "cloudfront_url":"${S3CloudFront.DomainName}"}
+  # S3
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  S3OriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: "Access for S3 bucket"
+
+  #Bucket Policy
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              CanonicalUser: !GetAtt S3OriginAccessIdentity.S3CanonicalUserId
+            Action: "s3:GetObject"
+            Resource: !Join
+              - ""
+              - - "arn:aws:s3:::"
+                - !Ref S3BucketName
+                - "/*"
+
+  #CloudFront
+  S3CloudFront:
+    Type: AWS::CloudFront::Distribution
+    DependsOn:
+      - S3Bucket
+      - S3OriginAccessIdentity
+    Properties:
+      DistributionConfig:
+        Comment: "CloudFront for S3 bucket"
+        Origins:
+          - DomainName: !GetAtt S3Bucket.DomainName
+            Id: "S3Origin"
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${S3OriginAccessIdentity}"
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+          ViewerProtocolPolicy: redirect-to-https
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: false
+        Enabled: true
+
+  DynamoDBBlogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref DynamoDBBlogTableName
+      AttributeDefinitions:
+        - AttributeName: "postId"
+          AttributeType: "S"
+        - AttributeName: "userId"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "postId"
+          KeyType: "HASH"
+      # BillingMode: "PROVISIONED"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 2
+        WriteCapacityUnits: 2
+      GlobalSecondaryIndexes:
+        - IndexName: "userId-index"
+          KeySchema:
+            - AttributeName: "userId"
+              KeyType: "HASH"
+          Projection:
+            ProjectionType: "ALL"
+          ProvisionedThroughput:
+            ReadCapacityUnits: 2
+            WriteCapacityUnits: 2
+
+  DynamoDBBloggerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref DynamoDBBloggerTableName
+      AttributeDefinitions:
+        - AttributeName: "userId"
+          AttributeType: "S"
+        - AttributeName: "email"
+          AttributeType: "S"
+        - AttributeName: "username"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "userId"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 2
+        WriteCapacityUnits: 2
+      GlobalSecondaryIndexes:
+        - IndexName: "email-index"
+          KeySchema:
+            - AttributeName: "email"
+              KeyType: "HASH"
+          Projection:
+            ProjectionType: "ALL"
+          ProvisionedThroughput:
+            ReadCapacityUnits: 2
+            WriteCapacityUnits: 2
+        - IndexName: "username-index"
+          KeySchema:
+            - AttributeName: "username"
+              KeyType: "HASH"
+          Projection:
+            ProjectionType: "ALL"
+          ProvisionedThroughput:
+            ReadCapacityUnits: 2
+            WriteCapacityUnits: 2
+
+  # SnsTopic:
+  #   Type: AWS::SNS::Topic
+  #   Properties:
+  #     DisplayName: "Blog Subscription"
+  #     TopicName: !Ref SnsTopicName
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt S3Bucket.DomainName
+            Id: "S3Origin"
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: "S3Origin"
+          ForwardedValues:
+            QueryString: false
+          ViewerProtocolPolicy: "redirect-to-https"
+        Enabled: true
+
+Outputs:
+#   S3BucketName:
+#     Value: !Ref S3Bucket
+#     Description: "S3 Bucket Name"
+
+  DynamoDBBlogTableName:
+    Value: !Ref DynamoDBBlogTable
+    Description: "DynamoDB Blog Table Name"
+
+  DynamoDBBloggerTableName:
+    Value: !Ref DynamoDBBloggerTable
+    Description: "DynamoDB Blogger Table Name"
+
+#   SecretManagerName:
+#     Value: !Ref MySecret
+#     Description: "Secret Manager Name"
