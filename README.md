@@ -70,7 +70,6 @@ Follow these steps to set up and deploy the project:
 
 3. **Configure AWS Services**:
     - Set up your AWS credentials and ensure you have the necessary permissions.
-      ```
 
 4. **Run Frontend Locally**:
     ```sh
