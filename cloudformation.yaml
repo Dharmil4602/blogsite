@@ -1,19 +1,29 @@
 Parameters:
   S3BucketName:
     Type: String
-    Default: test-from-cloudformation
+    Default: blog-term-images
   DynamoDBBlogTableName:
     Type: String
-    Default: test-blog
+    Default: blog
   DynamoDBBloggerTableName:
     Type: String
-    Default: test-bloggerDetails
+    Default: bloggerDetails
   SecretManagerName:
     Type: String
-    Default: test-blogSecretManager
-  # SnsTopicName:
-  #   Type: String
-  #   Default: test-BlogSubscription
+    Default: cloudTermSecret
+  SnsTopicName:
+    Type: String
+    Default: BlogSubscription
+  AwsAccessKey:
+    Type: String
+    Description: "Enter your AWS access key"
+  AwsSecretAccessKey:
+    Type: String
+    Description: "Enter your AWS secret access key"
+  AwsSessionToken:
+    Type: String
+    Description: "Enter your AWS session token"
+  
 
 Resources:
   #SecretManager
@@ -23,11 +33,9 @@ Resources:
       - S3CloudFront
     Properties:
       Name: !Ref SecretManagerName
-      Description: "5409 cloud project secret"
-      # SecretString: !Sub |
-      #   {"bucket_name":"${S3BucketName}", "cloudfront_url":"${S3CloudFront.DomainName}"}
+      Description: "Secret for Cloud Term Assignment"
       SecretString: !Sub |
-        {"bucket_name":"${S3BucketName}","blog_table_name":"${DynamoDBBlogTableName}","blogger_table_name":"${DynamoDBBloggerTableName}", "cloudfront_url":"${S3CloudFront.DomainName}"}
+        {"bucket_name":"${S3BucketName}","blog_table_name":"${DynamoDBBlogTableName}","blogger_table_name":"${DynamoDBBloggerTableName}", "cloudfront_url":"${S3CloudFront.DomainName}", "sns_arn":"${SnsTopic.TopicArn}"}
   # S3
   S3Bucket:
     Type: AWS::S3::Bucket
@@ -150,32 +158,106 @@ Resources:
             ReadCapacityUnits: 2
             WriteCapacityUnits: 2
 
-  # SnsTopic:
-  #   Type: AWS::SNS::Topic
-  #   Properties:
-  #     DisplayName: "Blog Subscription"
-  #     TopicName: !Ref SnsTopicName
-
-  CloudFrontDistribution:
-    Type: AWS::CloudFront::Distribution
+  SnsTopic:
+    Type: AWS::SNS::Topic
     Properties:
-      DistributionConfig:
-        Origins:
-          - DomainName: !GetAtt S3Bucket.DomainName
-            Id: "S3Origin"
-            S3OriginConfig:
-              OriginAccessIdentity: ""
-        DefaultCacheBehavior:
-          TargetOriginId: "S3Origin"
-          ForwardedValues:
-            QueryString: false
-          ViewerProtocolPolicy: "redirect-to-https"
-        Enabled: true
+      DisplayName: "Blog Subscription"
+      TopicName: !Ref SnsTopicName
+
+  BlogBackendEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: "ami-051f8a213df8bc089"
+      InstanceType: "t2.micro"
+      KeyName: "blogSite"
+      SecurityGroups:
+        - !Ref BlogBackendSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum install -y docker
+          sudo systemctl start docker
+          sudo docker pull dharmilshah/blog-backend
+          cat <<EOF > env
+          AWS_REGION=${AWS::Region}
+          AWS_ACCESS_KEY_ID=${AwsAccessKey}
+          AWS_SECRET_ACCESS_KEY=${AwsSecretAccessKey}
+          AWS_SESSION=${AwsSessionToken}
+          EOF
+          sudo docker run --env-file /env -p 80:5000 dharmilshah/blog-backend
+      BlockDeviceMappings:
+        - DeviceName: "/dev/xvda"
+          Ebs:
+            VolumeSize: 8
+            VolumeType: "gp3"
+      Tags:
+        - Key: Name
+          Value: "BlogBackendEC2Instance"
+  
+  BlogBackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for Blog Backend"
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: "tcp"
+          FromPort: 80
+          ToPort: 5000
+          CidrIp: "0.0.0.0/0"
+  
+  BlogFrontendApplication:
+    Type: "AWS::ElasticBeanstalk::Application"
+    Properties:
+      ApplicationName: "blogsite-frontend"
+  
+  BlogFrontendApplicationVersion:
+    Type: "AWS::ElasticBeanstalk::ApplicationVersion"
+    Properties:
+      ApplicationName: !Ref BlogFrontendApplication
+      Description: "Version of frontend application"
+      SourceBundle:
+        S3Bucket: "blogsite-frontend-bucket"
+        S3Key: "blogsite-frontend.zip"
+  
+  BlogFrontendEnvironment:
+    Type: "AWS::ElasticBeanstalk::Environment"
+    Properties:
+      ApplicationName: !Ref BlogFrontendApplication
+      EnvironmentName: "BlogSiteEnvironment"
+      Description: "Elastic Beanstalk environment for React.js frontend"
+      Tier:
+        Type: "Standard"
+        Name: "WebServer"
+      SolutionStackName: "64bit Amazon Linux 2023 v6.1.2 running Node.js 20"
+      OptionSettings:
+        - Namespace: "aws:elasticbeanstalk:application:environment"
+          OptionName: "NODE_ENV"
+          Value: "production"
+        - Namespace: "aws:elasticbeanstalk:application:environment"
+          OptionName: "REACT_APP_BACKEND_URL"
+          Value: !Sub "http://${BlogBackendEC2Instance.PublicDnsName}"
+        - Namespace: "aws:elasticbeanstalk:environment"
+          OptionName: "EnvironmentType"
+          Value: "SingleInstance"
+        - Namespace: "aws:elasticbeanstalk:environment"
+          OptionName: "ServiceRole"
+          Value: "LabRole"
+        - Namespace: "aws:autoscaling:launchconfiguration"
+          OptionName: "EC2KeyName"
+          Value: "blogSite"
+        - Namespace: "aws:autoscaling:launchconfiguration"
+          OptionName: "IamInstanceProfile"
+          Value: "LabInstanceProfile"
+      VersionLabel: !Ref BlogFrontendApplicationVersion
+
 
 Outputs:
-#   S3BucketName:
-#     Value: !Ref S3Bucket
-#     Description: "S3 Bucket Name"
+  S3BucketName:
+    Value: !Ref S3Bucket
+    Description: "S3 Bucket Name"
 
   DynamoDBBlogTableName:
     Value: !Ref DynamoDBBlogTable
@@ -185,6 +267,6 @@ Outputs:
     Value: !Ref DynamoDBBloggerTable
     Description: "DynamoDB Blogger Table Name"
 
-#   SecretManagerName:
-#     Value: !Ref MySecret
-#     Description: "Secret Manager Name"
+  SecretManagerName:
+    Value: !Ref MySecret
+    Description: "Secret Manager Name"
